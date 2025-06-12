@@ -1,122 +1,167 @@
-# auth_manager.py
+# auth_manager.py - 하이브리드 방식으로 개선
+
 import os
-import pickle
+import json
 import logging
 from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 logger = logging.getLogger(__name__)
 
 class GoogleAuthManager:
-    """Google OAuth Device Flow 인증 관리자"""
-    
     def __init__(self):
-        self.token_file = 'google_token.pickle'
-        self.credentials_file = os.getenv('GOOGLE_CREDENTIALS_FILE', 'credentials.json')
+        """Google 인증 관리자 초기화"""
         self.scopes = [
-            'https://www.googleapis.com/auth/calendar.events',
-            'https://www.googleapis.com/auth/calendar'
+            'https://www.googleapis.com/auth/calendar',  # 전체 캘린더 권한
+            'https://www.googleapis.com/auth/calendar.events',  # 이벤트 권한
+            'https://www.googleapis.com/auth/calendar.readonly'  # 읽기 권한
         ]
+        self.token_file = 'token.json'
+        self.credentials_file = 'credentials.json'
+        self.credentials = None
         
     def get_credentials(self):
-        """저장된 토큰을 로드하거나 새로 인증"""
+        """인증 정보 획득 - 하이브리드 방식"""
         creds = None
         
-        # 기존 토큰 파일 확인
+        # 1단계: 기존 토큰 파일 확인
         if os.path.exists(self.token_file):
-            logger.info("기존 토큰 파일을 로드합니다...")
-            with open(self.token_file, 'rb') as token:
-                creds = pickle.load(token)
+            logger.info("✅ 기존 토큰 파일을 발견했습니다!")
+            try:
+                creds = Credentials.from_authorized_user_file(self.token_file, self.scopes)
+                logger.info("📁 토큰 파일 로드 성공")
+            except Exception as e:
+                logger.warning(f"⚠️ 토큰 파일 로드 실패: {e}")
+                creds = None
         
-        # 토큰이 없거나 유효하지 않은 경우
+        # 2단계: 토큰 갱신 시도
+        if creds and creds.expired and creds.refresh_token:
+            logger.info("🔄 토큰 갱신을 시도합니다...")
+            try:
+                creds.refresh(Request())
+                logger.info("✅ 토큰 갱신 성공!")
+                
+                # 갱신된 토큰 저장
+                with open(self.token_file, 'w') as token:
+                    token.write(creds.to_json())
+                logger.info("💾 갱신된 토큰 저장 완료")
+                
+            except Exception as e:
+                logger.error(f"❌ 토큰 갱신 실패: {e}")
+                creds = None
+        
+        # 3단계: 새로운 인증 필요 (로컬에서만)
         if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                logger.info("토큰을 갱신합니다...")
-                try:
-                    creds.refresh(Request())
-                    logger.info("토큰 갱신 성공!")
-                except Exception as e:
-                    logger.warning(f"토큰 갱신 실패: {e}. 재인증을 진행합니다.")
-                    creds = self._device_flow_auth()
+            if os.path.exists(self.credentials_file):
+                logger.info("🔐 새로운 인증이 필요합니다...")
+                
+                # VM 환경 감지
+                if self.is_vm_environment():
+                    logger.error("🚨 VM 환경에서는 브라우저 인증이 불가능합니다!")
+                    logger.error("📋 해결 방법:")
+                    logger.error("   1. 로컬 PC에서 봇을 실행하여 token.json 생성")
+                    logger.error("   2. token.json 파일을 VM으로 복사")
+                    logger.error("   3. VM에서 봇 재실행")
+                    raise Exception("VM 환경에서 브라우저 인증 불가. 로컬에서 token.json을 생성하세요.")
+                
+                # 수동 브라우저 인증 실행
+                logger.info("🌐 브라우저 인증을 시작합니다...")
+                logger.info("📋 수동으로 인증 코드를 입력하는 방식입니다.")
+                
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    self.credentials_file, self.scopes)
+                
+                # 인증 URL 생성
+                flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
+                auth_url, _ = flow.authorization_url(prompt='consent')
+                
+                print("\n" + "="*60)
+                print("🔐 Google 계정 인증이 필요합니다!")
+                print("="*60)
+                print(f"1️⃣ 아래 URL을 브라우저에서 열어주세요:")
+                print(f"\n{auth_url}\n")
+                print("2️⃣ Google 계정으로 로그인하고 권한을 허용하세요")
+                print("3️⃣ 표시되는 인증 코드를 복사하세요")
+                print("="*60)
+                
+                # 사용자로부터 인증 코드 입력 받기
+                auth_code = input("📝 인증 코드를 입력하세요: ").strip()
+                
+                # 토큰 획득
+                flow.fetch_token(code=auth_code)
+                creds = flow.credentials
+                
+                # 토큰 저장
+                with open(self.token_file, 'w') as token:
+                    token.write(creds.to_json())
+                logger.info("✅ 새 토큰이 저장되었습니다!")
+                
             else:
-                logger.info("새로운 인증을 진행합니다...")
-                creds = self._device_flow_auth()
-            
-            # 토큰 저장
-            with open(self.token_file, 'wb') as token:
-                pickle.dump(creds, token)
-                logger.info("토큰이 저장되었습니다.")
+                raise FileNotFoundError(f"❌ {self.credentials_file} 파일이 없습니다!")
         
+        self.credentials = creds
         return creds
     
-    def _device_flow_auth(self):
-        """Device Flow를 사용한 OAuth 인증"""
-        if not os.path.exists(self.credentials_file):
-            raise FileNotFoundError(
-                f"OAuth 클라이언트 파일을 찾을 수 없습니다: {self.credentials_file}\n"
-                "Google Cloud Console에서 OAuth 2.0 클라이언트 ID를 생성하고 "
-                "JSON 파일을 다운로드하여 프로젝트 디렉토리에 저장하세요."
-            )
+    def is_vm_environment(self):
+        """VM 환경인지 감지 - macOS 친화적 버전"""
+        import platform
         
-        # Device Flow 설정
-        flow = InstalledAppFlow.from_client_secrets_file(
-            self.credentials_file, 
-            self.scopes
-        )
+        # macOS는 VM이 아님
+        if platform.system() == 'Darwin':
+            return False
         
-        # 콘솔 기반 인증 (브라우저 자동 실행 안함)
-        print("\n" + "="*60)
-        print("🔐 Google OAuth 인증이 필요합니다!")
-        print("="*60)
-        print("VM에서는 브라우저가 없으므로 Device Flow를 사용합니다.")
-        print("다음 단계를 따라주세요:\n")
+        # Windows도 VM이 아님
+        if platform.system() == 'Windows':
+            return False
         
-        # 최신 버전 호환을 위한 인증 방법
+        # Linux 계열에서만 VM 감지
+        vm_indicators = [
+            # SSH 연결 확인 (가장 확실한 지표)
+            os.getenv('SSH_CLIENT') is not None,
+            os.getenv('SSH_TTY') is not None,
+            # 가상화 관련 파일들
+            os.path.exists('/proc/vz'),
+            os.path.exists('/.dockerenv'),
+            # systemd-detect-virt 결과 확인 (Linux)
+            self._check_virtualization(),
+        ]
+        
+        # 하나라도 해당되면 VM으로 판단
+        return any(vm_indicators)
+    
+    def _check_virtualization(self):
+        """Linux에서 가상화 환경 감지"""
         try:
-            # 최신 버전에서는 run_local_server()를 사용하되 포트 0으로 설정
-            creds = flow.run_local_server(port=0, open_browser=False)
-        except Exception as e:
-            logger.warning(f"로컬 서버 방식 실패: {e}")
-            # 대안: 수동 인증 코드 입력 방식
-            try:
-                # 인증 URL 생성
-                auth_url, _ = flow.authorization_url(prompt='consent')
-                print(f"다음 URL을 브라우저에서 열어주세요:")
-                print(f"{auth_url}")
-                print("\n인증 완료 후 리디렉션 URL에서 'code=' 다음의 코드를 복사하세요.")
-                code = input("인증 코드를 입력하세요: ").strip()
-                
-                # 코드를 사용해서 토큰 요청
-                flow.fetch_token(code=code)
-                creds = flow.credentials
-            except Exception as manual_error:
-                logger.error(f"수동 인증도 실패: {manual_error}")
-                raise manual_error
-        
-        print("\n✅ 인증이 완료되었습니다!")
-        print("이제 Google Calendar API를 사용할 수 있습니다.")
-        print("="*60)
-        
-        return creds
+            import subprocess
+            result = subprocess.run(['systemd-detect-virt'], 
+                                  capture_output=True, text=True, timeout=5)
+            return result.returncode == 0 and result.stdout.strip() != 'none'
+        except:
+            return False
     
     def build_calendar_service(self):
-        """인증된 Google Calendar 서비스 생성"""
-        creds = self.get_credentials()
-        return build('calendar', 'v3', credentials=creds)
+        """Google Calendar 서비스 생성"""
+        try:
+            creds = self.get_credentials()
+            service = build('calendar', 'v3', credentials=creds)
+            logger.info("📅 Google Calendar 서비스 생성 완료")
+            return service
+        except Exception as e:
+            logger.error(f"❌ Calendar 서비스 생성 실패: {e}")
+            raise e
     
     def test_connection(self):
         """연결 테스트"""
         try:
             service = self.build_calendar_service()
+            calendar_list = service.calendarList().list().execute()
+            calendar_count = len(calendar_list.get('items', []))
             
-            # 캘린더 목록 조회로 테스트
-            calendars = service.calendarList().list().execute()
-            calendar_count = len(calendars.get('items', []))
-            
-            logger.info(f"✅ Google Calendar 연결 성공! ({calendar_count}개 캘린더 접근 가능)")
+            logger.info(f"✅ Google Calendar 연결 성공!")
             return True, f"{calendar_count}개 캘린더 접근 가능"
             
         except Exception as e:
-            logger.error(f"❌ Google Calendar 연결 실패: {e}")
+            logger.error(f"❌ 연결 테스트 실패: {e}")
             return False, str(e)
