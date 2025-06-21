@@ -731,7 +731,23 @@ JSON 이외의 어떤 텍스트도 포함하지 마세요.
                             "start": current_time.isoformat()
                         }
                     }
-                }
+                },
+                "children": [
+                    {
+                        "object": "block",
+                        "type": "paragraph",
+                        "paragraph": {
+                            "rich_text": [
+                                {
+                                    "type": "text",
+                                    "text": {
+                                        "content": original_content
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
             }
             
             response = self.notion.pages.create(**new_page)
