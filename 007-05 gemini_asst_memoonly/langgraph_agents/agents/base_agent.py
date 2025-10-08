@@ -3,10 +3,12 @@ import time
 import logging
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
+
 from ..state.models import WorkflowState, ExecutionResult, TaskStatus
 from ..state.manager import state_manager
 
 logger = logging.getLogger(__name__)
+
 
 class BaseAgent(ABC):
     def __init__(self, name: str, max_retries: int = 3):
@@ -16,7 +18,8 @@ class BaseAgent(ABC):
 
     @abstractmethod
     async def execute(self, state: WorkflowState, task_params: Dict[str, Any]) -> ExecutionResult:
-        pass
+        """에이전트가 실제 작업을 수행하는 메서드"""
+        raise NotImplementedError
 
     async def run_with_metrics(self, state: WorkflowState, task_params: Dict[str, Any]) -> ExecutionResult:
         start_time = time.time()
@@ -98,6 +101,7 @@ class BaseAgent(ABC):
     async def post_execute(self, state: WorkflowState, result: ExecutionResult) -> ExecutionResult:
         return result
 
+
 class AgentExecutor:
     def __init__(self):
         self.agents: Dict[str, BaseAgent] = {}
@@ -106,8 +110,7 @@ class AgentExecutor:
         self.agents[agent.name] = agent
         logger.info(f"Registered agent: {agent.name}")
 
-    async def execute_agent(self, agent_name: str, state: WorkflowState,
-                           task_params: Dict[str, Any]) -> ExecutionResult:
+    async def execute_agent(self, agent_name: str, state: WorkflowState, task_params: Dict[str, Any]) -> ExecutionResult:
         if agent_name not in self.agents:
             return ExecutionResult(
                 task_id=task_params.get("task_id", "unknown"),
@@ -118,8 +121,7 @@ class AgentExecutor:
         agent = self.agents[agent_name]
         return await agent.run_with_metrics(state, task_params)
 
-    async def execute_parallel(self, tasks: List[Dict[str, Any]],
-                              state: WorkflowState) -> List[ExecutionResult]:
+    async def execute_parallel(self, tasks: List[Dict[str, Any]], state: WorkflowState) -> List[ExecutionResult]:
         semaphore = asyncio.Semaphore(5)  # 최대 5개 동시 실행
 
         async def execute_with_semaphore(task):
@@ -132,7 +134,6 @@ class AgentExecutor:
             return_exceptions=True
         )
 
-        # Exception handling
         processed_results = []
         for i, result in enumerate(results):
             if isinstance(result, Exception):
@@ -145,6 +146,7 @@ class AgentExecutor:
                 processed_results.append(result)
 
         return processed_results
+
 
 # 글로벌 executor 인스턴스
 agent_executor = AgentExecutor()

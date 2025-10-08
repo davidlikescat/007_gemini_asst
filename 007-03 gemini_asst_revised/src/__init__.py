@@ -1,1 +1,0 @@
-# 최적화된 Discord Task Bot
